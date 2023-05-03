@@ -1,14 +1,12 @@
 // Next.js API route support: https://nextjs.org/docs/api-routes/introduction
 import type { NextApiRequest, NextApiResponse } from 'next';
-import FfmpegCommand, { FfmpegCommandLogger } from 'fluent-ffmpeg';
+import FfmpegCommand from 'fluent-ffmpeg';
 import pathToFfmpeg from 'ffmpeg-static';
 import path from 'path';
-import fs from 'fs';
-import { PassThrough, Readable, Writable } from 'stream';
+import { Readable, Writable } from 'stream';
 import formidable from 'formidable';
-import memorystream from 'memorystream';
+import MemoryStream from 'memorystream';
 import { IncomingMessage } from 'http';
-import { rejects } from 'assert';
 
 export const config = {
   api: {
