@@ -3,10 +3,11 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import FfmpegCommand from 'fluent-ffmpeg';
 import pathToFfmpeg from 'ffmpeg-static';
 import path from 'path';
-import { Readable, Writable } from 'stream';
+import { Readable, Duplex } from 'stream';
 import formidable from 'formidable';
 import MemoryStream from 'memorystream';
 import { IncomingMessage } from 'http';
+import fs from 'fs';
 
 export const config = {
   api: {
@@ -16,6 +17,20 @@ export const config = {
 
 type Data = {
   message: string
+}
+
+interface File {
+  filePath?: string,
+  fileName: string,
+
+}
+
+interface BlobFile extends File {
+  fileContent: Blob
+}
+
+interface StreamFile extends File {
+  fileContent: Duplex
 }
 
 class Logger {
@@ -33,8 +48,11 @@ class Logger {
   }
 }
 
-function convertFile(inputFileStream: Readable, outputFilePath: string) {
-  return new Promise<void>((resolve, reject) => {
+function convertFile(inputFileStream: Readable) {
+  const timeStamp = new Date().toISOString().replace(/[-:T]/g, '').replace(/\.\d\d\dZ/, '');
+  const fileName = `${timeStamp}.mp4`;
+  const outFilePath = path.join(process.cwd(), 'uploads', fileName);
+  return new Promise<BlobFile>((resolve, reject) => {
     if (!pathToFfmpeg) {
       return;
     }
@@ -49,69 +67,69 @@ function convertFile(inputFileStream: Readable, outputFilePath: string) {
       .on('end', function () {
         console.log('Processing finished !');
         setTimeout(() => {
-          resolve();
+          const outputBuffer = fs.readFileSync(outFilePath);
+          const outputBlob = new Blob([outputBuffer]);
+          resolve({ filePath: outFilePath, fileName: fileName, fileContent: outputBlob });
         }, 100)
       })
-    .save(outputFilePath);
+    .save(outFilePath);
   })
 }
 
-function readFormData(req: IncomingMessage, streamWriter: Writable) {
-  return new Promise<void>((resolve, reject) => {
-    const form = formidable({ 
-      multiples: true,
+function readFormData(req: IncomingMessage) {
+  const streamWriter = new MemoryStream();
+  return new Promise<StreamFile>((resolve, reject) => {
+    const form = formidable({
       fileWriteStreamHandler: () => streamWriter
     });
-    form.parse(req, (err, fields, files) => {
+    form.parse(req, (err, fields) => {
       if (err) {
         reject();
       }
-      resolve();
+      resolve({ fileName: fields.fileName as string, fileContent: streamWriter });
     });
   })
 }
 
+async function sendFile(file: Blob, fileTitle: string): Promise<Response> {
+  const formData = new FormData();
+  formData.append('fileType', 'mp4');
+  formData.append('fileName', fileTitle);
+  formData.append('fileToUpload', file);
+  formData.append('submit', 'Upload Video');
+  const uploadUrl = new URL('https://sandbox.luvdav.com/File_Upload/upload.php');
+  return await fetch(uploadUrl, {
+    method: 'POST',
+    body: formData
+  });
+}
+
+async function transformResponse(inputResponse: Response, outputResponse: NextApiResponse) {
+  const responseMessage = await inputResponse.text();
+  console.log(responseMessage);
+  const status = inputResponse.ok ? 204 : 500;
+  outputResponse.status(status);
+  if (!inputResponse.ok) {
+    const message = responseMessage;
+    outputResponse.json({ message: message });
+  }
+  outputResponse.end();
+}
+
+function removeFile(filePath?: string) {
+  if (!filePath) {
+    return;
+  }
+  fs.unlinkSync(filePath);
+}
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<Data>
 ) {
-
-  const inputStream = new memorystream();
-  await readFormData(req, inputStream);
-
-  const inFilePath = path.join(process.cwd(), 'uploads', 'test.webm');
-  const outFilePath = path.join(process.cwd(), 'uploads', 'test.mp4');
-  const inputBuffer = fs.readFileSync(inFilePath);
-  const input = Readable.from(inputBuffer);
-
-  await convertFile(inputStream, outFilePath);
-
-  const outputBuffer = fs.readFileSync(outFilePath);
-  const outputBlob = new Blob([outputBuffer]);
-
-  const formData = new FormData();
-  const timeStamp = new Date().toISOString().replace(/[-:T]/g, '').replace(/\.\d\d\dZ/, '');
-  const fileTitle = `${timeStamp}_1_Video`;
-  formData.append('fileType', 'mp4');
-  formData.append('fileName', fileTitle);
-  formData.append('fileToUpload', outputBlob);
-  formData.append('submit', 'Upload Video');
-  const uploadUrl = new URL('https://sandbox.luvdav.com/File_Upload/upload.php');
-  const uploadResponse = await fetch(uploadUrl, {
-    method: 'POST',
-    body: formData
-  });
-
-  const responseMessage = await uploadResponse.text();
-  console.log(responseMessage);
-  const status = uploadResponse.ok ? 204 : 500;
-  res.status(status);
-  if (!uploadResponse.ok) {
-    const message = 'Something went wrong!';
-    res.json({ message: message });
-  } else {
-    fs.unlinkSync(outFilePath);
-    res.json({ message: 'huh?' });
-  }
+  const inputFile = await readFormData(req);
+  const convertedFile = await convertFile(inputFile.fileContent);
+  const uploadResponse = await sendFile(convertedFile.fileContent, convertedFile.fileName);
+  await transformResponse(uploadResponse, res);
+  removeFile(convertedFile.filePath);
 }   
